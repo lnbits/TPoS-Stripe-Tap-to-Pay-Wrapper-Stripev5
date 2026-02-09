@@ -1,6 +1,6 @@
 <p align="center">
 
-  <h1>TPoS-Stripe Tap-to-Pay Wrapper</h1>
+  <h1>TPoS-Stripe Tap-to-Pay Wrapper Stripe v5</h1>
 
   <a href="https://opensats.org">
     <img alt="OpenSats Supported" src="https://img.shields.io/badge/OpenSats-Supported-orange?logo=bitcoin&logoColor=white">
