@@ -52,6 +52,7 @@ import com.google.android.gms.common.GoogleApiAvailability
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import androidx.core.net.toUri
+import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
 
@@ -67,6 +68,8 @@ class MainActivity : ComponentActivity() {
     private fun cfgBearer() = prefs.getString("bearer", ADMIN_BEARER_TOKEN_DEFAULT)!!
     private fun cfgLocId()  = prefs.getString("locId", TERMINAL_LOCATION_ID_DEFAULT)!!
     private fun cfgSimulated() = prefs.getBoolean("simulated", BuildConfig.DEBUG)
+    private fun cfgKioskMode() = prefs.getBoolean("kioskMode", false)
+    private fun cfgSavedScreenTimeout() = prefs.getInt("savedScreenTimeoutMs", -1)
     private fun hasSavedConfig(): Boolean =
         prefs.contains("origin") && prefs.contains("tposId") && prefs.contains("bearer") && prefs.contains("locId")
 
@@ -83,6 +86,12 @@ class MainActivity : ComponentActivity() {
 
     private var twaLauncher: TwaLauncher? = null
     private var terminalInitialized = false
+    private var pairingHandledForCurrentIntent = false
+
+    private var btnContinue: Button? = null
+    private var tvSummary: TextView? = null
+    private var btnSim: Button? = null
+    private var btnKiosk: Button? = null
 
     // Discovery/connect state
     private var discoveryStarted = false
@@ -100,9 +109,7 @@ class MainActivity : ComponentActivity() {
             val ok = saveFromPairingUrl(result.contents!!)
             if (ok) {
                 Log.i("TPOS_PAIR", "Saved config from pairing URL")
-                findViewById<Button>(R.id.btnContinue)?.visibility = View.VISIBLE
-                findViewById<TextView>(R.id.tvSummary)?.text =
-                    "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
+                refreshOnboardingUi()
             } else {
                 Log.e("TPOS_PAIR", "Invalid pairing URL: ${result.contents}")
             }
@@ -125,9 +132,21 @@ class MainActivity : ComponentActivity() {
         }
 
         initOnboardingUi()
+        if (cfgKioskMode()) {
+            applyKioskScreenTimeoutOrPrompt()
+            syncKioskModeToService()
+        }
 
-        // NOTE: Do NOT auto-show registration; it opens only when user taps "Continue".
-        // If you kept a tpos:// intent filter, we don't need to handle it explicitly here.
+        // Handle incoming deep-link pairing payloads on first launch.
+        handleIncomingIntent(intent, autoStartFlow = true)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pairingHandledForCurrentIntent = false
+        // Handle deep-links delivered to existing singleTop activity instances.
+        handleIncomingIntent(intent, autoStartFlow = true)
     }
 
     override fun onDestroy() {
@@ -138,21 +157,15 @@ class MainActivity : ComponentActivity() {
 
     private fun initOnboardingUi() {
         val btnScan = findViewById<Button>(R.id.btnScan)
-        val btnContinue = findViewById<Button>(R.id.btnContinue)
-        val tvSummary = findViewById<TextView>(R.id.tvSummary)
-        val btnSim = findViewById<Button>(R.id.btnSimulated)
-
-        fun refresh() {
-            if (hasSavedConfig()) {
-                btnContinue.visibility = View.VISIBLE
-                tvSummary.text = "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
-            } else {
-                btnContinue.visibility = View.GONE
-                tvSummary.text = ""
-            }
-            btnSim.text = if (cfgSimulated()) "Simulated: ON" else "Simulated: OFF"
-        }
-        refresh()
+        val continueBtn = findViewById<Button>(R.id.btnContinue)
+        val summary = findViewById<TextView>(R.id.tvSummary)
+        val simBtn = findViewById<Button>(R.id.btnSimulated)
+        val kioskBtn = findViewById<Button>(R.id.btnKioskMode)
+        btnContinue = continueBtn
+        tvSummary = summary
+        btnSim = simBtn
+        btnKiosk = kioskBtn
+        refreshOnboardingUi()
 
         btnScan.setOnClickListener {
             val opts = ScanOptions()
@@ -164,14 +177,101 @@ class MainActivity : ComponentActivity() {
             qrLauncher.launch(opts)
         }
 
-        btnContinue.setOnClickListener {
+        continueBtn.setOnClickListener {
             startPosFlow()
         }
 
-        btnSim.setOnClickListener {
+        simBtn.setOnClickListener {
             val next = !cfgSimulated()
             prefs.edit().putBoolean("simulated", next).apply()
-            refresh()
+            refreshOnboardingUi()
+        }
+
+        kioskBtn.setOnClickListener {
+            val next = !cfgKioskMode()
+            prefs.edit().putBoolean("kioskMode", next).apply()
+            if (next) applyKioskScreenTimeoutOrPrompt() else restoreScreenTimeoutIfNeeded()
+            refreshOnboardingUi()
+            syncKioskModeToService()
+        }
+    }
+
+    private fun refreshOnboardingUi() {
+        val continueBtn = btnContinue ?: return
+        val summary = tvSummary ?: return
+        val simBtn = btnSim ?: return
+        val kioskBtn = btnKiosk ?: return
+        if (hasSavedConfig()) {
+            continueBtn.visibility = View.VISIBLE
+            summary.text = "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
+        } else {
+            continueBtn.visibility = View.GONE
+            summary.text = ""
+        }
+        simBtn.text = if (cfgSimulated()) "Simulated: ON" else "Simulated: OFF"
+        kioskBtn.text = if (cfgKioskMode()) "Kiosk mode: ON" else "Kiosk mode: OFF"
+    }
+
+    private fun syncKioskModeToService() {
+        val intent = Intent(this, TposWebSocketService::class.java)
+            .setAction(TposWebSocketService.ACTION_START)
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun applyKioskScreenTimeoutOrPrompt() {
+        if (!Settings.System.canWrite(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Allow modify system settings")
+                .setMessage(
+                    "To keep the screen from sleeping in Kiosk mode, allow this app to modify system settings, then return here."
+                )
+                .setPositiveButton("Open settings") { _, _ ->
+                    val uri = Uri.parse("package:$packageName")
+                    startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, uri))
+                }
+                .setNegativeButton("Later", null)
+                .show()
+            return
+        }
+
+        val resolver = contentResolver
+        val current = runCatching {
+            Settings.System.getInt(resolver, Settings.System.SCREEN_OFF_TIMEOUT)
+        }.getOrDefault(60_000)
+
+        if (cfgSavedScreenTimeout() <= 0) {
+            prefs.edit().putInt("savedScreenTimeoutMs", max(current, 1_000)).apply()
+        }
+
+        // Use Android's max int timeout to approximate "never sleep" where OEM policy allows it.
+        Settings.System.putInt(resolver, Settings.System.SCREEN_OFF_TIMEOUT, Int.MAX_VALUE)
+        Log.i("TPOS_KIOSK", "Applied kiosk screen timeout override (max value)")
+    }
+
+    private fun restoreScreenTimeoutIfNeeded() {
+        if (!Settings.System.canWrite(this)) return
+        val saved = cfgSavedScreenTimeout()
+        if (saved <= 0) return
+        Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, saved)
+        prefs.edit().remove("savedScreenTimeoutMs").apply()
+        Log.i("TPOS_KIOSK", "Restored prior screen timeout: ${saved}ms")
+    }
+
+    private fun handleIncomingIntent(incoming: Intent?, autoStartFlow: Boolean) {
+        if (incoming == null || pairingHandledForCurrentIntent) return
+        if (incoming.action != Intent.ACTION_VIEW) return
+        val payload = incoming.dataString ?: return
+        pairingHandledForCurrentIntent = true
+        val ok = saveFromPairingUrl(payload)
+        if (!ok) {
+            Log.e("TPOS_PAIR", "Deep link payload was not a valid pairing URL: $payload")
+            return
+        }
+
+        Log.i("TPOS_PAIR", "Saved config from deep link payload")
+        refreshOnboardingUi()
+        if (autoStartFlow) {
+            mainHandler.post { startPosFlow() }
         }
     }
 
@@ -432,6 +532,18 @@ class MainActivity : ComponentActivity() {
         val discoveryConfig = DiscoveryConfiguration.TapToPayDiscoveryConfiguration(
             isSimulated = cfgSimulated()
         )
+        var connectAttempted = false
+        var finished = false
+        fun finishReady() {
+            if (finished) return
+            finished = true
+            onReady()
+        }
+        fun finishError(message: String) {
+            if (finished) return
+            finished = true
+            onError(message)
+        }
 
         try {
             Terminal.getInstance().discoverReaders(
@@ -444,12 +556,13 @@ class MainActivity : ComponentActivity() {
 
                         Terminal.getInstance().connectedReader?.let {
                             readerConnected = true
-                            onReady()
+                            finishReady()
                             return
                         }
-                        if (readers.isEmpty()) return
+                        if (readers.isEmpty() || connectAttempted) return
 
-                        startConnectedReaderWatchdog(onReady)
+                        startConnectedReaderWatchdog(::finishReady)
+                        connectAttempted = true
 
                         val cfg = ConnectionConfiguration.TapToPayConnectionConfiguration(
                             locationId = cfgLocId(),
@@ -462,13 +575,13 @@ class MainActivity : ComponentActivity() {
                             object : ReaderCallback {
                                 override fun onSuccess(reader: Reader) {
                                     readerConnected = true
-                                    onReady()
+                                    finishReady()
                                 }
                                 override fun onFailure(e: TerminalException) {
                                     val msg = "Connect failed [${e.errorCode}]: ${e.errorMessage}"
                                     Log.e("TPOS_WS", msg, e)
-                                    Terminal.getInstance().connectedReader?.let { onReady(); return }
-                                    onError(msg)
+                                    Terminal.getInstance().connectedReader?.let { finishReady(); return }
+                                    finishError(msg)
                                 }
                             }
                         )
@@ -479,13 +592,13 @@ class MainActivity : ComponentActivity() {
                     override fun onFailure(e: TerminalException) {
                         val msg = "Discovery failed [${e.errorCode}]: ${e.errorMessage}"
                         Log.e("TPOS_WS", msg, e)
-                        onError(msg)
+                        finishError(msg)
                     }
                 }
             )
         } catch (se: SecurityException) {
             Log.e("TPOS_PERM", "discoverReaders SecurityException", se)
-            onError("Permission error starting discovery: ${se.message ?: "SecurityException"}")
+            finishError("Permission error starting discovery: ${se.message ?: "SecurityException"}")
         }
     }
 
@@ -546,10 +659,7 @@ class MainActivity : ComponentActivity() {
         btnClose.setOnClickListener { dlg.dismiss() }
         btnGo.setOnClickListener {
             dlg.dismiss()
-            // Now that we’re registered, start WS and launch the TWA
-            startWsService()
-            if (twaLauncher == null) twaLauncher = TwaLauncher(this)
-            twaLauncher?.launch(Uri.parse(tposUrl()))
+            launchPosShell()
         }
 
         dlg.show()
@@ -597,5 +707,11 @@ class MainActivity : ComponentActivity() {
             },
             onDenied = { e -> onFail("Permissions denied: $e") }
         )
+    }
+
+    private fun launchPosShell() {
+        startWsService()
+        if (twaLauncher == null) twaLauncher = TwaLauncher(this)
+        twaLauncher?.launch(Uri.parse(tposUrl()))
     }
 }

@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.squareup.moshi.Moshi
@@ -32,6 +33,7 @@ class TposWebSocketService : Service() {
     private val prefs by lazy { getSharedPreferences("tpos_prefs", MODE_PRIVATE) }
     private fun cfgOrigin() = prefs.getString("origin", "")!!
     private fun cfgTposId() = prefs.getString("tposId", "")!!
+    private fun cfgKioskMode() = prefs.getBoolean("kioskMode", false)
     private fun wsUrl() = "wss://${cfgOrigin()}/api/v1/ws/${cfgTposId()}"
 
     private val http = OkHttpClient.Builder()
@@ -44,6 +46,7 @@ class TposWebSocketService : Service() {
     private var wsReconnectPending = false
     private var wsBackoffMs = 500L
     @Volatile private var busy = false
+    private var kioskWakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -53,11 +56,13 @@ class TposWebSocketService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                updateKioskWakeLock(false)
                 stopSelf()
                 return START_NOT_STICKY
             }
             else -> {
                 startForeground(NOTIF_ID, buildNotification())
+                updateKioskWakeLock(cfgKioskMode())
                 startTposWebSocket()
                 return START_STICKY
             }
@@ -68,6 +73,7 @@ class TposWebSocketService : Service() {
         super.onDestroy()
         try { ws?.cancel() } catch (_: Throwable) {}
         ws = null
+        updateKioskWakeLock(false)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -181,6 +187,27 @@ class TposWebSocketService : Service() {
             NotificationManager.IMPORTANCE_LOW
         )
         mgr.createNotificationChannel(channel)
+    }
+
+    private fun updateKioskWakeLock(enabled: Boolean) {
+        if (!enabled) {
+            try {
+                kioskWakeLock?.let { if (it.isHeld) it.release() }
+            } catch (_: Throwable) {}
+            kioskWakeLock = null
+            Log.i("TPOS_WS", "Kiosk wake lock disabled")
+            return
+        }
+
+        if (kioskWakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        @Suppress("DEPRECATION")
+        val levelAndFlags = PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE
+        kioskWakeLock = pm.newWakeLock(levelAndFlags, "lnbits:tpos_kiosk_dim").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        Log.i("TPOS_WS", "Kiosk wake lock enabled")
     }
 
     private fun buildNotification(): Notification {

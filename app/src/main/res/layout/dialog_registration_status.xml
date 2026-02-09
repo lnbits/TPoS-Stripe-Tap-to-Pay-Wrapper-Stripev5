@@ -28,6 +28,14 @@
         android:text="Details"
         android:paddingBottom="16dp" />
 
+    <TextView
+        android:id="@+id/tvRegHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="First-time registration can take a few minutes."
+        android:textSize="12sp"
+        android:paddingBottom="16dp" />
+
     <Button
         android:id="@+id/btnRegContinue"
         android:layout_width="match_parent"
@@ -41,4 +49,3 @@
         android:layout_height="wrap_content"
         android:text="Cancel" />
 </LinearLayout>
-

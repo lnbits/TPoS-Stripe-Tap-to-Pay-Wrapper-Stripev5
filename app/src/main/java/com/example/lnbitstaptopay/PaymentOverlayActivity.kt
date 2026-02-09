@@ -83,13 +83,26 @@ class PaymentOverlayActivity : ComponentActivity() {
         val discoveryConfig = DiscoveryConfiguration.TapToPayDiscoveryConfiguration(
             isSimulated = cfgSimulated()
         )
+        var connectAttempted = false
+        var finished = false
+        fun finishReady() {
+            if (finished) return
+            finished = true
+            onReady()
+        }
+        fun finishError(message: String) {
+            if (finished) return
+            finished = true
+            showErrorAndFinish(message)
+        }
 
         try {
             Terminal.getInstance().discoverReaders(
                 discoveryConfig,
                 object : DiscoveryListener {
                     override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
-                        if (readers.isEmpty()) return
+                        if (readers.isEmpty() || connectAttempted) return
+                        connectAttempted = true
                         val cfg = ConnectionConfiguration.TapToPayConnectionConfiguration(
                             locationId = cfgLocId(),
                             autoReconnectOnUnexpectedDisconnect = true,
@@ -100,12 +113,12 @@ class PaymentOverlayActivity : ComponentActivity() {
                             cfg,
                             object : ReaderCallback {
                                 override fun onSuccess(reader: Reader) {
-                                    onReady()
+                                    finishReady()
                                 }
                                 override fun onFailure(e: TerminalException) {
                                     val msg = "Connect failed [${e.errorCode}]: ${e.errorMessage}"
                                     Log.e("TPOS_OVERLAY", msg)
-                                    showErrorAndFinish(msg)
+                                    finishError(msg)
                                 }
                             }
                         )
@@ -116,14 +129,14 @@ class PaymentOverlayActivity : ComponentActivity() {
                     override fun onFailure(e: TerminalException) {
                         val msg = "Discovery failed [${e.errorCode}]: ${e.errorMessage}"
                         Log.e("TPOS_OVERLAY", msg)
-                        showErrorAndFinish(msg)
+                        finishError(msg)
                     }
                 }
             )
         } catch (t: Throwable) {
             val msg = "Error starting discovery: ${t.message ?: "Unknown error"}"
             Log.e("TPOS_OVERLAY", msg, t)
-            showErrorAndFinish(msg)
+            finishError(msg)
         }
     }
 
