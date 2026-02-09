@@ -44,6 +44,14 @@ Follow these steps for a clean installation of the LNbits Stripe Setup.
 - Android device with NFC support  
 - Stable internet connection  
 
+### Device Compatibility And Security Notes
+
+- This wrapper depends on the Stripe Terminal Tap to Pay SDK and only works on Android devices that meet Stripe's current hardware/OS compatibility requirements.
+- A low-cost device can work if it is eligible. Example tested device: **Samsung Galaxy A16**.
+- Devices must **not be rooted**.
+- For production Tap to Pay use, keep **Developer Options disabled**.
+- Enable Developer Options/USB debugging only temporarily when doing local ADB installs for development.
+
 
 
 ## Installation
@@ -90,7 +98,7 @@ Use this if you want to build and install a debug APK locally.
 
 ### Prerequisites
 
-- Enable Developer Options + USB debugging on your Android device.
+- Temporarily enable Developer Options + USB debugging on your Android device (for local install only).
 - Install JDK 17 and Android SDK command-line tools.
 
 ### Linux (Ubuntu) quick setup
@@ -180,4 +188,3 @@ LNbits empowers developers and merchants with modular, open-source tools for bui
 </div>
 
 <hr style="margin: 28px 0; border: 0; border-top: 1px solid #e5e7eb;" />
-
