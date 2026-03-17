@@ -66,7 +66,6 @@ class PaymentOverlayActivity : ComponentActivity() {
 
     private fun hasAllRuntimePerms(): Boolean {
         val want = mutableListOf(
-            Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
         if (Build.VERSION.SDK_INT >= 31) {

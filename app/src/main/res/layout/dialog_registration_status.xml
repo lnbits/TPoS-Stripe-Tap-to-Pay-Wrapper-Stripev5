@@ -36,6 +36,14 @@
         android:textSize="12sp"
         android:paddingBottom="16dp" />
 
+    <TextView
+        android:id="@+id/tvRegDebug"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Diagnostic status will appear here."
+        android:textSize="12sp"
+        android:paddingBottom="16dp" />
+
     <Button
         android:id="@+id/btnRegContinue"
         android:layout_width="match_parent"

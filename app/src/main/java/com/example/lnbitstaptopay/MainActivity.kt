@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
     // Discovery/connect state
     private var discoveryStarted = false
     private var readerConnected = false
-    private var discoveryTimeoutPosted = false
+    private var discoveryTimeoutRunnable: Runnable? = null
 
     // ---- permission launcher (register once)
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
@@ -348,14 +348,25 @@ class MainActivity : ComponentActivity() {
         true
     }
 
-    /** @return reason string if NOT eligible, else null */
     private fun tapToPayEligibleReason(): String? {
-        val (gmsOk, gmsMsg) = hasPlayServices()
-        if (!gmsOk) return "Google Play services not available: ${gmsMsg ?: "unknown error"}"
-        if (!hasPlayStore()) return "Google Play Store app not installed"
-        if (!hasNfcEnabled()) return "NFC is missing or turned off"
-        if (!isLocationEnabled()) return "Location services are turned off"
-        if (!supportsTapToPayDiscovery()) return "SDK reports Tap to Pay discovery not supported"
+        if (cfgSimulated()) return null
+
+        val (hasGms, gmsReason) = hasPlayServices()
+        if (!hasGms) {
+            return "Google Play services unavailable${gmsReason?.let { ": $it" } ?: ""}"
+        }
+        if (!hasPlayStore()) {
+            return "Google Play Store is not installed on this device"
+        }
+        if (!hasNfcEnabled()) {
+            return "NFC is disabled"
+        }
+        if (!isLocationEnabled()) {
+            return "Location services are disabled"
+        }
+        if (!supportsTapToPayDiscovery()) {
+            return "Tap to Pay discovery is not supported by this Stripe SDK/device combination"
+        }
         return null
     }
 
@@ -386,7 +397,6 @@ class MainActivity : ComponentActivity() {
     // ----------------------------------------------------
 
     private fun startPosFlow() {
-        // Gate Tap-to-Pay on device eligibility
         val reason = tapToPayEligibleReason()
         if (reason != null) {
             Log.e("TPOS_TTP", "Tap to Pay not available on this device: $reason")
@@ -412,19 +422,22 @@ class MainActivity : ComponentActivity() {
         showRegistrationScreen()
     }
 
-    private fun postDiscoveryTimeout() {
-        if (discoveryTimeoutPosted) return
-        discoveryTimeoutPosted = true
-        mainHandler.postDelayed({
-            discoveryTimeoutPosted = false
+    private fun cancelDiscoveryTimeout() {
+        discoveryTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        discoveryTimeoutRunnable = null
+    }
+
+    private fun postDiscoveryTimeout(onSlow: () -> Unit) {
+        cancelDiscoveryTimeout()
+        val timeout = Runnable {
+            discoveryTimeoutRunnable = null
             if (!readerConnected) {
-                val msg = "No Tap to Pay reader discovered/connected in time"
-                Log.e("TPOS_TTP", msg)
-                showUnsupportedDialog(
-                    "$msg. Possible causes: device fails attestation, Play Services outdated, or Tap to Pay not supported on this model."
-                )
+                Log.w("TPOS_TTP", "Tap to Pay registration is still in progress after timeout window")
+                onSlow()
             }
-        }, 10_000L)
+        }
+        discoveryTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, 30_000L)
     }
 
     data class TokenResp(val secret: String?)
@@ -438,7 +451,6 @@ class MainActivity : ComponentActivity() {
     // ---- request perms helper (kept for re-use inside registration)
     private fun hasAllRuntimePerms(): Boolean {
         val want = mutableListOf(
-            Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
         if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -455,8 +467,6 @@ class MainActivity : ComponentActivity() {
         val need = mutableListOf<String>()
         val api = android.os.Build.VERSION.SDK_INT
 
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
-            need += Manifest.permission.CAMERA
         if (api >= 33) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 need += Manifest.permission.POST_NOTIFICATIONS
@@ -512,10 +522,11 @@ class MainActivity : ComponentActivity() {
     private fun discoverAndConnect(
         onReady: () -> Unit,
         onError: (String) -> Unit,
-        onUpdate: ((Int) -> Unit)? = null
+        onUpdate: ((Int) -> Unit)? = null,
+        onDebug: ((String) -> Unit)? = null
     ) {
         if (!hasAllRuntimePerms()) {
-            onError("Missing runtime permissions (Location/Bluetooth/Camera).")
+            onError("Missing runtime permissions (Location/Bluetooth).")
             return
         }
 
@@ -532,7 +543,6 @@ class MainActivity : ComponentActivity() {
         val discoveryConfig = DiscoveryConfiguration.TapToPayDiscoveryConfiguration(
             isSimulated = cfgSimulated()
         )
-        var connectAttempted = false
         var finished = false
         fun finishReady() {
             if (finished) return
@@ -545,61 +555,114 @@ class MainActivity : ComponentActivity() {
             onError(message)
         }
 
-        try {
-            Terminal.getInstance().discoverReaders(
-                discoveryConfig,
-                object : DiscoveryListener {
-                    override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
-                        discoveryStarted = true
-                        onUpdate?.invoke(readers.size)
-                        Log.i("TPOS_WS", "Discovered readers: ${readers.size}")
+        fun startAttempt(attempt: Int) {
+            if (finished) return
+            var connectAttempted = false
+            var discoveryCallbackSeen = false
+            onDebug?.invoke("Starting discovery attempt $attempt")
 
-                        Terminal.getInstance().connectedReader?.let {
-                            readerConnected = true
-                            finishReady()
-                            return
-                        }
-                        if (readers.isEmpty() || connectAttempted) return
-
-                        startConnectedReaderWatchdog(::finishReady)
-                        connectAttempted = true
-
-                        val cfg = ConnectionConfiguration.TapToPayConnectionConfiguration(
-                            locationId = cfgLocId(),
-                            autoReconnectOnUnexpectedDisconnect = true,
-                            tapToPayReaderListener = null
-                        )
-                        Terminal.getInstance().connectReader(
-                            readers.first(),
-                            cfg,
-                            object : ReaderCallback {
-                                override fun onSuccess(reader: Reader) {
-                                    readerConnected = true
-                                    finishReady()
-                                }
-                                override fun onFailure(e: TerminalException) {
-                                    val msg = "Connect failed [${e.errorCode}]: ${e.errorMessage}"
-                                    Log.e("TPOS_WS", msg, e)
-                                    Terminal.getInstance().connectedReader?.let { finishReady(); return }
-                                    finishError(msg)
-                                }
-                            }
-                        )
-                    }
-                },
-                object : Callback {
-                    override fun onSuccess() { discoveryStarted = true }
-                    override fun onFailure(e: TerminalException) {
-                        val msg = "Discovery failed [${e.errorCode}]: ${e.errorMessage}"
-                        Log.e("TPOS_WS", msg, e)
-                        finishError(msg)
-                    }
+            val noCallbackWatchdog = Runnable {
+                if (finished || discoveryCallbackSeen || readerConnected) return@Runnable
+                val cr = try { Terminal.getInstance().connectedReader } catch (_: Throwable) { null }
+                if (cr != null) {
+                    readerConnected = true
+                    onDebug?.invoke("Watchdog saw connectedReader during discovery attempt $attempt")
+                    finishReady()
+                    return@Runnable
                 }
-            )
-        } catch (se: SecurityException) {
-            Log.e("TPOS_PERM", "discoverReaders SecurityException", se)
-            finishError("Permission error starting discovery: ${se.message ?: "SecurityException"}")
+
+                onDebug?.invoke("No discovery callback from Stripe on attempt $attempt")
+                if (attempt < 2) {
+                    onDebug?.invoke("Retrying discovery once")
+                    startAttempt(attempt + 1)
+                } else {
+                    finishError("Stripe discovery did not respond. Please try again.")
+                }
+            }
+
+            try {
+                Terminal.getInstance().discoverReaders(
+                    discoveryConfig,
+                    object : DiscoveryListener {
+                        override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
+                            try {
+                                discoveryCallbackSeen = true
+                                discoveryStarted = true
+                                onDebug?.invoke("Discovery callback delivered ${readers.size} reader(s) on attempt $attempt")
+                                onDebug?.invoke("Terminal connectionStatus=${Terminal.getInstance().connectionStatus}")
+                                onUpdate?.invoke(readers.size)
+                                Log.i("TPOS_WS", "Discovered readers: ${readers.size}")
+
+                                Terminal.getInstance().connectedReader?.let {
+                                    readerConnected = true
+                                    onDebug?.invoke("connectedReader already available during discovery callback")
+                                    finishReady()
+                                    return
+                                }
+                                if (readers.isEmpty() || connectAttempted) return
+
+                                startConnectedReaderWatchdog(::finishReady)
+                                connectAttempted = true
+                                val firstReader = readers.first()
+                                onDebug?.invoke(
+                                    "Preparing connectReader for deviceType=${firstReader.deviceType} serial=${firstReader.serialNumber ?: "unknown"} using location=${cfgLocId()}"
+                                )
+
+                                val cfg = ConnectionConfiguration.TapToPayConnectionConfiguration(
+                                    locationId = cfgLocId(),
+                                    autoReconnectOnUnexpectedDisconnect = true,
+                                    tapToPayReaderListener = null
+                                )
+                                onDebug?.invoke("Calling connectReader now")
+                                Terminal.getInstance().connectReader(
+                                    firstReader,
+                                    cfg,
+                                    object : ReaderCallback {
+                                        override fun onSuccess(reader: Reader) {
+                                            readerConnected = true
+                                            onDebug?.invoke("connectReader succeeded on attempt $attempt")
+                                            finishReady()
+                                        }
+                                        override fun onFailure(e: TerminalException) {
+                                            val msg = "Connect failed [${e.errorCode}]: ${e.errorMessage}"
+                                            Log.e("TPOS_WS", msg, e)
+                                            onDebug?.invoke(msg)
+                                            Terminal.getInstance().connectedReader?.let { finishReady(); return }
+                                            finishError(msg)
+                                        }
+                                    }
+                                )
+                            } catch (t: Throwable) {
+                                val msg = "Exception in discovery callback: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
+                                Log.e("TPOS_WS", msg, t)
+                                onDebug?.invoke(msg)
+                                finishError(msg)
+                            }
+                        }
+                    },
+                    object : Callback {
+                        override fun onSuccess() {
+                            discoveryStarted = true
+                            onDebug?.invoke("discoverReaders started successfully on attempt $attempt")
+                        }
+                        override fun onFailure(e: TerminalException) {
+                            val msg = "Discovery failed [${e.errorCode}]: ${e.errorMessage}"
+                            Log.e("TPOS_WS", msg, e)
+                            onDebug?.invoke(msg)
+                            finishError(msg)
+                        }
+                    }
+                )
+                mainHandler.postDelayed(noCallbackWatchdog, 15_000L)
+            } catch (se: SecurityException) {
+                Log.e("TPOS_PERM", "discoverReaders SecurityException", se)
+                val msg = "Permission error starting discovery: ${se.message ?: "SecurityException"}"
+                onDebug?.invoke(msg)
+                finishError(msg)
+            }
         }
+
+        startAttempt(1)
     }
 
     private fun startConnectedReaderWatchdog(onReady: () -> Unit) {
@@ -623,12 +686,18 @@ class MainActivity : ComponentActivity() {
         val tvTitle   = view.findViewById<TextView>(R.id.tvRegTitle)
         val tvStep    = view.findViewById<TextView>(R.id.tvRegStep)
         val tvDetail  = view.findViewById<TextView>(R.id.tvRegDetail)
+        val tvDebug   = view.findViewById<TextView>(R.id.tvRegDebug)
         val btnClose  = view.findViewById<Button>(R.id.btnRegClose)
         val btnGo     = view.findViewById<Button>(R.id.btnRegContinue)
+        var registrationSettled = false
+        var dialogActive = true
+        var registrationObserver: Runnable? = null
+        val debugLines = ArrayDeque<String>()
 
         tvTitle.text = "Registering this device with Stripe"
         tvStep.text  = "Starting…"
         tvDetail.text = "Checking device eligibility and connecting…"
+        tvDebug.text = ""
         btnGo.isEnabled = false
 
         val dlg = AlertDialog.Builder(this)
@@ -636,30 +705,101 @@ class MainActivity : ComponentActivity() {
             .setCancelable(false)
             .create()
 
+        fun onUi(block: () -> Unit) {
+            if (Looper.myLooper() == Looper.getMainLooper()) block()
+            else mainHandler.post { if (dialogActive) block() }
+        }
+
+        fun debugStatus(message: String) {
+            Log.i("TPOS_REG", message)
+            onUi {
+                if (!dialogActive) return@onUi
+                if (debugLines.size >= 8) debugLines.removeFirst()
+                debugLines.addLast(message)
+                tvDebug.text = debugLines.joinToString("\n")
+            }
+        }
+
         fun onPhase(label: String, detail: String = "") {
-            tvStep.text = label
-            tvDetail.text = detail
+            onUi {
+                if (!dialogActive || registrationSettled) return@onUi
+                tvStep.text = label
+                tvDetail.text = detail
+            }
+            debugStatus("UI phase: $label${if (detail.isBlank()) "" else " | $detail"}")
         }
         fun onRegistered(reader: Reader) {
-            tvTitle.text = "Registered ✅"
-            tvStep.text  = "Connected as software reader"
             val rn = reader.serialNumber ?: "unknown"
             val dt = reader.deviceType?.name ?: "TapToPay"
             val lid = cfgLocId()
-            tvDetail.text = "Reader: $dt • SN: $rn\nLocation: $lid"
-            btnGo.isEnabled = true
+            onUi {
+                if (!dialogActive || registrationSettled) return@onUi
+                registrationSettled = true
+                cancelDiscoveryTimeout()
+                registrationObserver?.let { mainHandler.removeCallbacks(it) }
+                registrationObserver = null
+                tvTitle.text = "Registered ✅"
+                tvStep.text  = "Connected as software reader"
+                tvDetail.text = "Reader: $dt • SN: $rn\nLocation: $lid"
+                btnGo.isEnabled = true
+            }
+            debugStatus("Reader connected: type=$dt serial=$rn location=$lid")
         }
         fun onFail(msg: String) {
-            tvTitle.text = "Couldn’t register"
-            tvStep.text  = "Error"
-            tvDetail.text = msg
-            btnGo.isEnabled = false
+            onUi {
+                if (!dialogActive || registrationSettled) return@onUi
+                registrationSettled = true
+                cancelDiscoveryTimeout()
+                registrationObserver?.let { mainHandler.removeCallbacks(it) }
+                registrationObserver = null
+                tvTitle.text = "Couldn’t register"
+                tvStep.text  = "Error"
+                tvDetail.text = msg
+                btnGo.isEnabled = false
+            }
+            debugStatus("Registration failed: $msg")
         }
 
-        btnClose.setOnClickListener { dlg.dismiss() }
+        fun startRegistrationObserver() {
+            registrationObserver?.let { mainHandler.removeCallbacks(it) }
+            val watcher = object : Runnable {
+                override fun run() {
+                    if (!dialogActive || registrationSettled) return
+                    val cr = try { Terminal.getInstance().connectedReader } catch (_: Throwable) { null }
+                    if (cr != null) {
+                        readerConnected = true
+                        debugStatus("Observer saw connectedReader become available")
+                        onRegistered(cr)
+                        return
+                    }
+                    mainHandler.postDelayed(this, 500L)
+                }
+            }
+            registrationObserver = watcher
+            debugStatus("Started connectedReader observer")
+            mainHandler.postDelayed(watcher, 500L)
+        }
+
+        btnClose.setOnClickListener {
+            dialogActive = false
+            cancelDiscoveryTimeout()
+            registrationObserver?.let { mainHandler.removeCallbacks(it) }
+            registrationObserver = null
+            dlg.dismiss()
+        }
         btnGo.setOnClickListener {
+            dialogActive = false
+            cancelDiscoveryTimeout()
+            registrationObserver?.let { mainHandler.removeCallbacks(it) }
+            registrationObserver = null
             dlg.dismiss()
             launchPosShell()
+        }
+        dlg.setOnDismissListener {
+            dialogActive = false
+            cancelDiscoveryTimeout()
+            registrationObserver?.let { mainHandler.removeCallbacks(it) }
+            registrationObserver = null
         }
 
         dlg.show()
@@ -668,12 +808,15 @@ class MainActivity : ComponentActivity() {
             tvTitle.text = "Pair device to continue"
             tvStep.text = "Waiting for pairing"
             tvDetail.text = "Scan the pairing link QR code to set Origin, TPoS ID, Token, and Location."
+            debugStatus("No saved pairing config present")
             btnGo.isEnabled = false
             return
         }
 
+        debugStatus("Saved config found for location=${cfgLocId()} simulated=${cfgSimulated()}")
         val reason = tapToPayEligibleReason()
         if (reason != null) { onFail("Device not eligible: $reason"); return }
+        debugStatus("Eligibility checks passed")
 
         if (!terminalInitialized) {
             onPhase("Initializing Stripe SDK")
@@ -685,27 +828,45 @@ class MainActivity : ComponentActivity() {
                 null
             )
             terminalInitialized = true
+            debugStatus("Terminal.init completed")
+        } else {
+            debugStatus("Terminal already initialized")
         }
 
         discoveryStarted = false
         readerConnected = false
-        postDiscoveryTimeout()
+        startRegistrationObserver()
+        postDiscoveryTimeout {
+            onPhase(
+                "Still connecting…",
+                "Initial Tap to Pay registration can take longer on some devices. Leave this screen open while Stripe finishes setup."
+            )
+        }
 
         ensurePermissions(
             onGranted = {
+                debugStatus("Runtime permissions granted")
                 onPhase("Discovering Tap to Pay reader", "simulated=${cfgSimulated()}")
                 discoverAndConnect(
                     onReady = {
                         val cr = Terminal.getInstance().connectedReader
                         if (cr != null) onRegistered(cr) else onFail("Connected, but reader not available")
                     },
-                    onError = { e -> onFail(e) },
+                    onError = { e ->
+                        debugStatus("discoverAndConnect error: $e")
+                        onFail(e)
+                    },
                     onUpdate = { count ->
+                        debugStatus("Discovery callback: found $count candidate reader(s)")
                         onPhase("Discovering…", "Found $count candidate${if (count==1) "" else "s"} — connecting…")
-                    }
+                    },
+                    onDebug = ::debugStatus
                 )
             },
-            onDenied = { e -> onFail("Permissions denied: $e") }
+            onDenied = { e ->
+                debugStatus("Runtime permissions denied: $e")
+                onFail("Permissions denied: $e")
+            }
         )
     }
 
