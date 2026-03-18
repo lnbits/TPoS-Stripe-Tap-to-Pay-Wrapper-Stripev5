@@ -20,6 +20,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class TposWebSocketService : Service() {
@@ -92,6 +93,10 @@ class TposWebSocketService : Service() {
 
             override fun onMessage(ws: WebSocket, text: String) {
                 Log.i("TPOS_WS", "Message: $text")
+                if (messageType(text) == "receipt_print") {
+                    launchReceiptPrint(text)
+                    return
+                }
                 val msg = parseTapToPay(text)
                 if (msg?.client_secret.isNullOrBlank() || msg?.payment_intent_id.isNullOrBlank()) {
                     Log.w("TPOS_WS", "Missing client_secret or payment_intent_id in payload")
@@ -176,6 +181,18 @@ class TposWebSocketService : Service() {
             tpos_id           = map["tpos_id"],
             payment_hash      = map["payment_hash"]
         )
+    }
+
+    private fun messageType(raw: String): String? =
+        runCatching {
+            JSONObject(raw).optString("type").takeIf { it.isNotBlank() }
+        }.getOrNull()
+
+    private fun launchReceiptPrint(payload: String) {
+        val intent = Intent(this, ReceiptPrintActivity::class.java)
+            .putExtra(ReceiptPrintActivity.EXTRA_RECEIPT_PAYLOAD, payload)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        startActivity(intent)
     }
 
     private fun createNotificationChannel() {

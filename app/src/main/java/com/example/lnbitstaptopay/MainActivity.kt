@@ -67,11 +67,13 @@ class MainActivity : ComponentActivity() {
     private fun cfgTposId() = prefs.getString("tposId", TPOS_ID_DEFAULT)!!
     private fun cfgBearer() = prefs.getString("bearer", ADMIN_BEARER_TOKEN_DEFAULT)!!
     private fun cfgLocId()  = prefs.getString("locId", TERMINAL_LOCATION_ID_DEFAULT)!!
+    private fun hasStripeLocationConfig(): Boolean = cfgLocId().isNotBlank()
+    private fun hasStripeAuthConfig(): Boolean = cfgBearer().isNotBlank()
     private fun cfgSimulated() = prefs.getBoolean("simulated", BuildConfig.DEBUG)
     private fun cfgKioskMode() = prefs.getBoolean("kioskMode", false)
     private fun cfgSavedScreenTimeout() = prefs.getInt("savedScreenTimeoutMs", -1)
     private fun hasSavedConfig(): Boolean =
-        prefs.contains("origin") && prefs.contains("tposId") && prefs.contains("bearer") && prefs.contains("locId")
+        prefs.contains("origin") && prefs.contains("tposId")
 
     private fun tposUrl() = "https://${cfgOrigin()}/tpos/${cfgTposId()}"
     private fun stripeBase() = "https://${cfgOrigin()}/api/v1/fiat/stripe"
@@ -203,7 +205,11 @@ class MainActivity : ComponentActivity() {
         val kioskBtn = btnKiosk ?: return
         if (hasSavedConfig()) {
             continueBtn.visibility = View.VISIBLE
-            summary.text = "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
+            summary.text = if (hasStripeLocationConfig()) {
+                "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
+            } else {
+                "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (without Stripe)"
+            }
         } else {
             continueBtn.visibility = View.GONE
             summary.text = ""
@@ -283,14 +289,18 @@ class MainActivity : ComponentActivity() {
             val segs = u.pathSegments
             if (segs.size < 2 || segs[0] != "tpos") return false
             val tposId = segs[1]
-            val pos  = u.getQueryParameter("pos") ?: return false
-            val auth = u.getQueryParameter("auth") ?: return false
+            val auth = u.getQueryParameter("auth")
+            val pos  = u.getQueryParameter("pos")
 
             prefs.edit()
                 .putString("origin", host + port)
                 .putString("tposId", tposId)
-                .putString("bearer", auth)
-                .putString("locId", pos)
+                .apply {
+                    if (auth.isNullOrBlank()) remove("bearer")
+                    else putString("bearer", auth)
+                    if (pos.isNullOrBlank()) remove("locId")
+                    else putString("locId", pos)
+                }
                 .apply()
             true
         }.getOrDefault(false)
@@ -397,6 +407,21 @@ class MainActivity : ComponentActivity() {
     // ----------------------------------------------------
 
     private fun startPosFlow() {
+        if (!hasStripeLocationConfig()) {
+            showRegistrationScreen()
+            return
+        }
+
+        if (!hasStripeAuthConfig()) {
+            Log.e("TPOS_TTP", "Stripe location is configured, but auth token is missing")
+            AlertDialog.Builder(this)
+                .setTitle("Stripe setup incomplete")
+                .setMessage("This pairing includes a Stripe POS location but no auth token. Scan a full Stripe pairing code or remove the pos parameter to use the wrapper without Stripe.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
         val reason = tapToPayEligibleReason()
         if (reason != null) {
             Log.e("TPOS_TTP", "Tap to Pay not available on this device: $reason")
@@ -699,6 +724,7 @@ class MainActivity : ComponentActivity() {
         tvDetail.text = "Checking device eligibility and connecting…"
         tvDebug.text = ""
         btnGo.isEnabled = false
+        btnGo.text = "Continue"
 
         val dlg = AlertDialog.Builder(this)
             .setView(view)
@@ -810,6 +836,15 @@ class MainActivity : ComponentActivity() {
             tvDetail.text = "Scan the pairing link QR code to set Origin, TPoS ID, Token, and Location."
             debugStatus("No saved pairing config present")
             btnGo.isEnabled = false
+            return
+        }
+
+        if (!hasStripeLocationConfig()) {
+            tvTitle.text = "Using without Stripe"
+            tvStep.text = "Continue"
+            tvDetail.text = "This pairing does not include a Stripe POS location. Continue to open the TPoS wrapper directly."
+            debugStatus("Saved config found without Stripe location; skipping Stripe registration")
+            btnGo.isEnabled = true
             return
         }
 
