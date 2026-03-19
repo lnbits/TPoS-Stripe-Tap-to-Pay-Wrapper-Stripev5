@@ -6,9 +6,13 @@ import android.os.Bundle
 import android.print.PrintManager
 import android.text.TextUtils
 import android.util.Log
+import android.content.Intent
+import android.net.Uri
+import android.util.Base64
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
+import java.nio.charset.StandardCharsets
 
 class ReceiptPrintActivity : Activity() {
 
@@ -17,6 +21,8 @@ class ReceiptPrintActivity : Activity() {
     }
 
     private var printStarted = false
+    private var systemPrintLaunched = false
+    private var leftForSystemPrint = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +47,12 @@ class ReceiptPrintActivity : Activity() {
             return
         }
 
+        val receiptType = document.optString("receipt_type", "receipt")
+        if (launchRawBt(printText, receiptType)) {
+            finish()
+            return
+        }
+
         val webView = WebView(this)
         setContentView(webView)
         webView.settings.javaScriptEnabled = false
@@ -56,11 +68,10 @@ class ReceiptPrintActivity : Activity() {
                 } else {
                     "TPoS Receipt $paymentHash"
                 }
+                systemPrintLaunched = true
                 printManager.print(jobName, view.createPrintDocumentAdapter(jobName), null)
-                view.postDelayed({ finish() }, 750L)
             }
         }
-        val receiptType = document.optString("receipt_type", "receipt")
         webView.loadDataWithBaseURL(
             null,
             buildHtml(printText, receiptType),
@@ -68,6 +79,78 @@ class ReceiptPrintActivity : Activity() {
             "UTF-8",
             null
         )
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (systemPrintLaunched) {
+            leftForSystemPrint = true
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (systemPrintLaunched && leftForSystemPrint) {
+            finish()
+        }
+    }
+
+    private fun launchRawBt(printText: String, receiptType: String): Boolean {
+        val payload = if (receiptType == "order_receipt") {
+            buildEscPosOrderReceipt(printText)
+        } else {
+            printText.toByteArray(StandardCharsets.UTF_8)
+        }
+        val encoded = Base64.encodeToString(
+            payload,
+            Base64.NO_WRAP
+        )
+        val uri = Uri.parse("rawbt:data:text/plain;base64,$encoded")
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+            `package` = "ru.a402d.rawbtprinter"
+            addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        }
+        val canHandle = intent.resolveActivity(packageManager) != null
+        if (!canHandle) {
+            Log.i("TPOS_PRINT", "RawBT not available; falling back to Android print framework")
+            return false
+        }
+        startActivity(intent)
+        Log.i("TPOS_PRINT", "Sent print job to RawBT")
+        return true
+    }
+
+    private fun buildEscPosOrderReceipt(printText: String): ByteArray {
+        val out = mutableListOf<Byte>()
+        fun append(vararg bytes: Int) {
+            bytes.forEach { out.add(it.toByte()) }
+        }
+        fun appendText(text: String) {
+            text.toByteArray(StandardCharsets.UTF_8).forEach { out.add(it) }
+        }
+
+        append(0x1B, 0x40) // initialize
+        append(0x1B, 0x61, 0x01) // center header
+        append(0x1D, 0x21, 0x11) // double width + double height
+
+        val blocks = printText.split(Regex("\\n\\s*\\n"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        blocks.forEachIndexed { index, block ->
+            if (index == 0) {
+                appendText(block)
+                appendText("\n\n")
+                append(0x1B, 0x61, 0x00) // left align body
+            } else {
+                appendText(block)
+                appendText("\n\n")
+            }
+        }
+
+        append(0x1D, 0x21, 0x00) // restore normal size
+        append(0x1B, 0x64, 0x03) // feed a few lines
+        return out.toByteArray()
     }
 
     private fun buildHtml(printText: String, receiptType: String): String {
@@ -97,7 +180,7 @@ class ReceiptPrintActivity : Activity() {
                   font-family: monospace;
                   color: #111;
                   padding: 24px 18px;
-                  font-size: 18px;
+                  font-size: ${if (isOrderReceipt) 27 else 18}px;
                   line-height: 1.35;
                 }
                 .receipt-block {

@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private fun cfgTposId() = prefs.getString("tposId", TPOS_ID_DEFAULT)!!
     private fun cfgBearer() = prefs.getString("bearer", ADMIN_BEARER_TOKEN_DEFAULT)!!
     private fun cfgLocId()  = prefs.getString("locId", TERMINAL_LOCATION_ID_DEFAULT)!!
+    private fun cfgWrapperMode() = prefs.getBoolean("wrapperMode", false)
     private fun hasStripeLocationConfig(): Boolean = cfgLocId().isNotBlank()
     private fun hasStripeAuthConfig(): Boolean = cfgBearer().isNotBlank()
     private fun cfgSimulated() = prefs.getBoolean("simulated", BuildConfig.DEBUG)
@@ -75,7 +76,10 @@ class MainActivity : ComponentActivity() {
     private fun hasSavedConfig(): Boolean =
         prefs.contains("origin") && prefs.contains("tposId")
 
-    private fun tposUrl() = "https://${cfgOrigin()}/tpos/${cfgTposId()}"
+    private fun tposUrl(): String {
+        val base = "https://${cfgOrigin()}/tpos/${cfgTposId()}"
+        return if (cfgWrapperMode()) "$base?wrapper=true" else base
+    }
     private fun stripeBase() = "https://${cfgOrigin()}/api/v1/fiat/stripe"
 
     private val http = OkHttpClient.Builder()
@@ -206,9 +210,11 @@ class MainActivity : ComponentActivity() {
         if (hasSavedConfig()) {
             continueBtn.visibility = View.VISIBLE
             summary.text = if (hasStripeLocationConfig()) {
-                "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (pos=${cfgLocId()})"
+                "${tposUrl()} (pos=${cfgLocId()})"
             } else {
-                "Saved: https://${cfgOrigin()}/tpos/${cfgTposId()} (without Stripe)"
+                "${
+                    tposUrl()
+                } (without Stripe)"
             }
         } else {
             continueBtn.visibility = View.GONE
@@ -291,10 +297,12 @@ class MainActivity : ComponentActivity() {
             val tposId = segs[1]
             val auth = u.getQueryParameter("auth")
             val pos  = u.getQueryParameter("pos")
+            val wrapperMode = u.getQueryParameter("wrapper") == "true"
 
             prefs.edit()
                 .putString("origin", host + port)
                 .putString("tposId", tposId)
+                .putBoolean("wrapperMode", wrapperMode)
                 .apply {
                     if (auth.isNullOrBlank()) remove("bearer")
                     else putString("bearer", auth)
