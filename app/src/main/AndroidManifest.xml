@@ -102,6 +102,13 @@
         android:excludeFromRecents="true"
         android:finishOnTaskLaunch="true" />
 
+    <activity
+        android:name=".ReceiptPrintActivity"
+        android:exported="false"
+        android:theme="@style/Theme.TapToPay.Transparent"
+        android:excludeFromRecents="true"
+        android:finishOnTaskLaunch="true" />
+
     <service
         android:name=".TposWebSocketService"
         android:exported="false"
