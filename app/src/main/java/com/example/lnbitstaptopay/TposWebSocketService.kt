@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.example.lnbitstaptopay.printing.NativeReceiptPrinter
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
@@ -41,6 +42,7 @@ class TposWebSocketService : Service() {
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
     private val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+    private val nativeReceiptPrinter by lazy { NativeReceiptPrinter(this) }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var ws: WebSocket? = null
@@ -94,7 +96,7 @@ class TposWebSocketService : Service() {
             override fun onMessage(ws: WebSocket, text: String) {
                 Log.i("TPOS_WS", "Message: $text")
                 if (messageType(text) == "receipt_print") {
-                    launchReceiptPrint(text)
+                    handleReceiptPrint(text)
                     return
                 }
                 val msg = parseTapToPay(text)
@@ -188,7 +190,20 @@ class TposWebSocketService : Service() {
             JSONObject(raw).optString("type").takeIf { it.isNotBlank() }
         }.getOrNull()
 
-    private fun launchReceiptPrint(payload: String) {
+    private fun handleReceiptPrint(payload: String) {
+        Thread {
+            if (nativeReceiptPrinter.hasConfiguredPrinter() && nativeReceiptPrinter.print(payload)) {
+                Log.i("TPOS_PRINT", "Printed receipt silently via native printer")
+                return@Thread
+            }
+            Log.i("TPOS_PRINT", "Falling back to ReceiptPrintActivity")
+            mainHandler.post {
+                launchReceiptPrintActivity(payload)
+            }
+        }.start()
+    }
+
+    private fun launchReceiptPrintActivity(payload: String) {
         val intent = Intent(this, ReceiptPrintActivity::class.java)
             .putExtra(ReceiptPrintActivity.EXTRA_RECEIPT_PAYLOAD, payload)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)

@@ -2,6 +2,7 @@ package com.example.lnbitstaptopay
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -14,6 +15,7 @@ import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,6 +51,9 @@ import android.nfc.NfcAdapter
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 
+import com.example.lnbitstaptopay.printing.BluetoothPrinterTransport
+import com.example.lnbitstaptopay.printing.EscPosFormatter
+import com.example.lnbitstaptopay.printing.PrinterConfigRepository
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import androidx.core.net.toUri
@@ -63,6 +68,8 @@ class MainActivity : ComponentActivity() {
     private val TERMINAL_LOCATION_ID_DEFAULT = ""
 
     private val prefs by lazy { getSharedPreferences("tpos_prefs", MODE_PRIVATE) }
+    private val printerConfigRepository by lazy { PrinterConfigRepository(this) }
+    private val printerTransport by lazy { BluetoothPrinterTransport(this, printerConfigRepository) }
     private fun cfgOrigin() = prefs.getString("origin", BACKEND_ORIGIN_DEFAULT)!!
     private fun cfgTposId() = prefs.getString("tposId", TPOS_ID_DEFAULT)!!
     private fun cfgBearer() = prefs.getString("bearer", ADMIN_BEARER_TOKEN_DEFAULT)!!
@@ -98,6 +105,10 @@ class MainActivity : ComponentActivity() {
     private var tvSummary: TextView? = null
     private var btnSim: Button? = null
     private var btnKiosk: Button? = null
+    private var btnPrinterConnect: Button? = null
+    private var btnPrinterTest: Button? = null
+    private var btnPrinterForget: Button? = null
+    private var tvPrinterSummary: TextView? = null
 
     // Discovery/connect state
     private var discoveryStarted = false
@@ -167,10 +178,18 @@ class MainActivity : ComponentActivity() {
         val summary = findViewById<TextView>(R.id.tvSummary)
         val simBtn = findViewById<Button>(R.id.btnSimulated)
         val kioskBtn = findViewById<Button>(R.id.btnKioskMode)
+        val printerConnectBtn = findViewById<Button>(R.id.btnPrinterConnect)
+        val printerTestBtn = findViewById<Button>(R.id.btnPrinterTest)
+        val printerForgetBtn = findViewById<Button>(R.id.btnPrinterForget)
+        val printerSummary = findViewById<TextView>(R.id.tvPrinterSummary)
         btnContinue = continueBtn
         tvSummary = summary
         btnSim = simBtn
         btnKiosk = kioskBtn
+        btnPrinterConnect = printerConnectBtn
+        btnPrinterTest = printerTestBtn
+        btnPrinterForget = printerForgetBtn
+        tvPrinterSummary = printerSummary
         refreshOnboardingUi()
 
         btnScan.setOnClickListener {
@@ -200,6 +219,26 @@ class MainActivity : ComponentActivity() {
             refreshOnboardingUi()
             syncKioskModeToService()
         }
+
+        printerConnectBtn.setOnClickListener {
+            ensurePrinterPermissions(
+                onGranted = { showBondedPrinterPicker() },
+                onDenied = { showToast("Printer permissions denied: $it") }
+            )
+        }
+
+        printerTestBtn.setOnClickListener {
+            ensurePrinterPermissions(
+                onGranted = { testConfiguredPrinter() },
+                onDenied = { showToast("Printer permissions denied: $it") }
+            )
+        }
+
+        printerForgetBtn.setOnClickListener {
+            printerConfigRepository.clearPrinter()
+            refreshOnboardingUi()
+            showToast("Saved printer removed")
+        }
     }
 
     private fun refreshOnboardingUi() {
@@ -207,6 +246,10 @@ class MainActivity : ComponentActivity() {
         val summary = tvSummary ?: return
         val simBtn = btnSim ?: return
         val kioskBtn = btnKiosk ?: return
+        val printerConnectBtn = btnPrinterConnect ?: return
+        val printerTestBtn = btnPrinterTest ?: return
+        val printerForgetBtn = btnPrinterForget ?: return
+        val printerSummary = tvPrinterSummary ?: return
         if (hasSavedConfig()) {
             continueBtn.visibility = View.VISIBLE
             summary.text = if (hasStripeLocationConfig()) {
@@ -222,6 +265,15 @@ class MainActivity : ComponentActivity() {
         }
         simBtn.text = if (cfgSimulated()) "Simulated: ON" else "Simulated: OFF"
         kioskBtn.text = if (cfgKioskMode()) "Kiosk mode: ON" else "Kiosk mode: OFF"
+        val savedPrinter = printerTransport.savedPrinter()
+        printerConnectBtn.text = if (savedPrinter == null) "Connect Printer" else "Change Printer"
+        printerTestBtn.isEnabled = savedPrinter != null
+        printerForgetBtn.isEnabled = savedPrinter != null
+        printerSummary.text = if (savedPrinter == null) {
+            "Printer: not configured"
+        } else {
+            "Printer: ${savedPrinter.name} (${savedPrinter.address})"
+        }
     }
 
     private fun syncKioskModeToService() {
@@ -518,6 +570,97 @@ class MainActivity : ComponentActivity() {
         onPermsGranted = onGranted
         onPermsDenied  = onDenied
         permissionLauncher.launch(need.toTypedArray())
+    }
+
+    private fun ensurePrinterPermissions(onGranted: () -> Unit, onDenied: (String) -> Unit) {
+        val need = mutableListOf<String>()
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                need += Manifest.permission.BLUETOOTH_CONNECT
+            }
+        }
+        if (need.isEmpty()) {
+            onGranted()
+            return
+        }
+        onPermsGranted = onGranted
+        onPermsDenied = onDenied
+        permissionLauncher.launch(need.toTypedArray())
+    }
+
+    private fun showBondedPrinterPicker() {
+        val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = bluetoothManager.adapter
+        if (adapter == null) {
+            showToast("Bluetooth is not available on this device")
+            return
+        }
+        if (!adapter.isEnabled) {
+            showToast("Turn on Bluetooth first")
+            return
+        }
+
+        val printers = printerTransport.bondedPrinters()
+        if (printers.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("No paired printers found")
+                .setMessage("Pair the printer in Android Bluetooth settings first, then return here to select it.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        val labels = printers.map { "${it.name}\n${it.address}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Choose Printer")
+            .setItems(labels) { _, which ->
+                val printer = printers[which]
+                printerConfigRepository.saveBluetoothPrinter(printer.name, printer.address)
+                refreshOnboardingUi()
+                showToast("Saved printer: ${printer.name}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun testConfiguredPrinter() {
+        val savedPrinter = printerTransport.savedPrinter()
+        if (savedPrinter == null) {
+            showToast("Pick a printer first")
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Test printer")
+            .setMessage("Send a small native ESC/POS test print to ${savedPrinter.name}?")
+            .setPositiveButton("Print") { _, _ ->
+                printTestPage(savedPrinter.name)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun printTestPage(printerName: String) {
+        val payload = EscPosFormatter.buildTestPrint(getString(R.string.app_name))
+        showToast("Sending test print to $printerName…")
+        Thread {
+            val error = runCatching {
+                printerTransport.print(payload)
+            }.exceptionOrNull()
+            runOnUiThread {
+                if (error == null) {
+                    showToast("Test print sent to $printerName")
+                } else {
+                    val message = error.message ?: error.javaClass.simpleName
+                    Log.e("TPOS_PRINT", "Native test print failed", error)
+                    showToast("Printer test failed: $message")
+                }
+            }
+        }.start()
+    }
+
+    private fun showToast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     private fun Request.Builder.withBearer(): Request.Builder =

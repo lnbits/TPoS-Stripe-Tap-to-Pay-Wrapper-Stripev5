@@ -103,6 +103,48 @@
             android:backgroundTint="@color/lnbits_card"
             android:textColor="@color/lnbits_text" />
 
+        <Button
+            android:id="@+id/btnPrinterConnect"
+            android:text="Connect Printer"
+            android:textAllCaps="false"
+            android:textSize="14sp"
+            android:layout_marginTop="10dp"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:backgroundTint="@color/lnbits_card"
+            android:textColor="@color/lnbits_text" />
+
+        <Button
+            android:id="@+id/btnPrinterTest"
+            android:text="Test Printer"
+            android:textAllCaps="false"
+            android:textSize="14sp"
+            android:layout_marginTop="10dp"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:backgroundTint="@color/lnbits_card"
+            android:textColor="@color/lnbits_text" />
+
+        <Button
+            android:id="@+id/btnPrinterForget"
+            android:text="Forget Printer"
+            android:textAllCaps="false"
+            android:textSize="14sp"
+            android:layout_marginTop="10dp"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:backgroundTint="@color/lnbits_card"
+            android:textColor="@color/lnbits_text" />
+
+        <TextView
+            android:id="@+id/tvPrinterSummary"
+            android:text=""
+            android:textColor="@color/lnbits_muted"
+            android:textSize="12sp"
+            android:layout_marginTop="12dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
         <TextView
             android:id="@+id/tvSummary"
             android:text=""
