@@ -1,6 +1,9 @@
 name: Build & Release APK
 
 on:
+  push:
+    tags:
+      - "*"
   release:
     types:
       - published
