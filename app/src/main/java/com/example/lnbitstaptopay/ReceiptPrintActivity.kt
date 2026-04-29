@@ -11,8 +11,9 @@ import android.net.Uri
 import android.util.Base64
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.example.lnbitstaptopay.printing.EscPosFormatter
+import com.example.lnbitstaptopay.printing.ReceiptPrintPayload
 import org.json.JSONObject
-import java.nio.charset.StandardCharsets
 
 class ReceiptPrintActivity : Activity() {
 
@@ -34,21 +35,15 @@ class ReceiptPrintActivity : Activity() {
             return
         }
 
-        val document = runCatching { JSONObject(payload) }.getOrElse {
-            Log.e("TPOS_PRINT", "Invalid receipt payload", it)
+        val parsedPayload = ReceiptPrintPayload.fromRaw(payload)
+        if (parsedPayload == null) {
+            Log.e("TPOS_PRINT", "Invalid receipt payload")
             finish()
             return
         }
+        val document = JSONObject(payload)
 
-        val printText = document.optString("print_text").trim()
-        if (printText.isBlank()) {
-            Log.e("TPOS_PRINT", "Missing print_text in receipt payload")
-            finish()
-            return
-        }
-
-        val receiptType = document.optString("receipt_type", "receipt")
-        if (launchRawBt(printText, receiptType)) {
+        if (launchRawBt(parsedPayload)) {
             finish()
             return
         }
@@ -74,7 +69,7 @@ class ReceiptPrintActivity : Activity() {
         }
         webView.loadDataWithBaseURL(
             null,
-            buildHtml(printText, receiptType),
+            buildHtml(parsedPayload.printText, parsedPayload.receiptType),
             "text/html",
             "UTF-8",
             null
@@ -95,12 +90,11 @@ class ReceiptPrintActivity : Activity() {
         }
     }
 
-    private fun launchRawBt(printText: String, receiptType: String): Boolean {
-        val payload = if (receiptType == "order_receipt") {
-            buildEscPosOrderReceipt(printText)
-        } else {
-            printText.toByteArray(StandardCharsets.UTF_8)
-        }
+    private fun launchRawBt(receiptPayload: ReceiptPrintPayload): Boolean {
+        val payload = EscPosFormatter.buildReceiptPrint(
+            printText = receiptPayload.printText,
+            receiptType = receiptPayload.receiptType
+        )
         val encoded = Base64.encodeToString(
             payload,
             Base64.NO_WRAP
@@ -118,39 +112,6 @@ class ReceiptPrintActivity : Activity() {
         startActivity(intent)
         Log.i("TPOS_PRINT", "Sent print job to RawBT")
         return true
-    }
-
-    private fun buildEscPosOrderReceipt(printText: String): ByteArray {
-        val out = mutableListOf<Byte>()
-        fun append(vararg bytes: Int) {
-            bytes.forEach { out.add(it.toByte()) }
-        }
-        fun appendText(text: String) {
-            text.toByteArray(StandardCharsets.UTF_8).forEach { out.add(it) }
-        }
-
-        append(0x1B, 0x40) // initialize
-        append(0x1B, 0x61, 0x01) // center header
-        append(0x1D, 0x21, 0x11) // double width + double height
-
-        val blocks = printText.split(Regex("\\n\\s*\\n"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        blocks.forEachIndexed { index, block ->
-            if (index == 0) {
-                appendText(block)
-                appendText("\n\n")
-                append(0x1B, 0x61, 0x00) // left align body
-            } else {
-                appendText(block)
-                appendText("\n\n")
-            }
-        }
-
-        append(0x1D, 0x21, 0x00) // restore normal size
-        append(0x1B, 0x64, 0x03) // feed a few lines
-        return out.toByteArray()
     }
 
     private fun buildHtml(printText: String, receiptType: String): String {
