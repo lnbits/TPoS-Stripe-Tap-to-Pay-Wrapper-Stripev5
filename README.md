@@ -1,6 +1,6 @@
 <p align="center">
 
-  <h1>TPoS-Stripe Tap-to-Pay Wrapper Stripe v5</h1>
+  # TPoS-Stripe Tap-to-Pay Wrapper Stripe v5
 
   <a href="https://opensats.org">
     <img alt="OpenSats Supported" src="https://img.shields.io/badge/OpenSats-Supported-orange?logo=bitcoin&logoColor=white">
@@ -16,7 +16,7 @@
   </a>
 
 
-# > Now includes native silent printing!
+## Now includes native silent printing!
 
  <br><br>
   <strong>One checkout. Two rails.</strong><br>
