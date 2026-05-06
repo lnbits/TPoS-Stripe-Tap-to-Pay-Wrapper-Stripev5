@@ -16,7 +16,7 @@
   </a>
 
 
-## Now includes native silent printing!
+## Now includes native silent printing! 🖨️ 
 
  <br><br>
   <strong>One checkout. Two rails.</strong><br>
