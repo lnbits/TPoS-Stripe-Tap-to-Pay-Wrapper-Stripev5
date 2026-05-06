@@ -15,6 +15,8 @@
     <img alt="Download APK" src="https://img.shields.io/badge/Download-APK-blue?logo=android&logoColor=white">
   </a>
 
+> Now includes native silent printing!
+
  <br><br>
   <strong>One checkout. Two rails.</strong><br>
   A seamless integration for handling both fiat and Lightning payments within the LNbits ecosystem. This extension allows merchants to accept traditional card payments via Stripe's Tap-to-Pay functionality alongside instant Lightning Network transactions, providing a unified payment experience.
