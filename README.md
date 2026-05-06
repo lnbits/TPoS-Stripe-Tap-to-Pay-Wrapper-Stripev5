@@ -15,7 +15,8 @@
     <img alt="Download APK" src="https://img.shields.io/badge/Download-APK-blue?logo=android&logoColor=white">
   </a>
 
-> Now includes native silent printing!
+
+# > Now includes native silent printing!
 
  <br><br>
   <strong>One checkout. Two rails.</strong><br>
