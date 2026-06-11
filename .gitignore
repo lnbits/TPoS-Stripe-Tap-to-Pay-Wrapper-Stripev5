@@ -30,3 +30,8 @@ captures/
 # Misc
 .DS_Store
 .codex
+
+# Keys
+*.jks
+*.keystore
+*.base64
